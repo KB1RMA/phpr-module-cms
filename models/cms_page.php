@@ -26,6 +26,14 @@ class Cms_Page extends Cms_Base
 	protected static $cache_by_name = null;
 	protected $content_blocks = null;
 
+	//
+	// Navigation Cache
+	//
+
+	public static $navigation_parent_cache = null;
+	protected static $navigation_id_cache = null;
+	protected static $navigation_full_parent_cache = null;
+
 	public $belongs_to = array(
 		'template' => array('class_name'=>'Cms_Template', 'foreign_key'=>'template_id'),
 		'security_mode' => array('class_name'=>'Cms_Security_Group', 'foreign_key'=>'security_id'),
@@ -1045,4 +1053,128 @@ class Cms_Page extends Cms_Base
 		$obj->save();
 		return $obj;
 	}	
+
+	//
+	// Page Navigation
+	//
+
+	public static function navigation_root_pages()
+	{
+		self::init_navigation_cache();
+
+		$result = array();
+		if (empty(self::$navigation_parent_cache[-1]))
+			return $result;
+
+		foreach (self::$navigation_parent_cache[-1] as $reference)
+			$result[] = $reference;
+
+		return $result;
+	}
+
+	public function navigation_subpages()
+	{
+		self::init_navigation_cache();
+
+		$ref = $this->find_this_reference();
+		if (!$ref)
+			return array();
+
+		return $ref->navigation_subpages();
+	}
+
+	public function navigation_parents($include_self = true)
+	{
+		$this->init_navigation_cache();
+
+		$ref = $this->find_this_reference();
+		if (!$ref)
+			return array();
+
+		$result = array();
+		if ($include_self)
+			$result[] = $ref;
+
+		$parent_key = $ref->parent_id;
+
+		if (empty(self::$navigation_id_cache[$parent_key]))
+			return $result;
+
+		$parents = array();
+		while (!empty(self::$navigation_id_cache[$parent_key]))
+		{
+			$parents[] = self::$navigation_id_cache[$parent_key];
+			$parent_key = self::$navigation_id_cache[$parent_key]->parent_id;
+		}
+
+		$parents = array_reverse($parents);
+
+		if ($include_this)
+			$parents[] = $ref;
+
+		return $parents;
+	}
+
+	protected function find_this_reference()
+	{
+		return !empty(self::$navigation_id_cache[$this->id]) ? self::$navigation_id_cache[$this->id] : null;
+	}
+
+	protected static function init_navigation_cache()
+	{
+		if (!empty(self::$navigation_parent_cache))
+			return;
+
+		self::$navigation_parent_cache = array();
+		self::$navigation_id_cache = array();
+		self::$navigation_full_parent_cache = array();
+
+		$controller = Cms_Controller::get_instance();
+		$visibility = $controller->user ? 'users' : 'guests';
+
+		$pages = Db_DbHelper::objectArray(
+			'SELECT
+				id,
+				name,
+				title,
+				parent_id,
+				url,
+				navigation_label,
+				navigation_visible
+			FROM cms_pages WHERE
+				security_id IN ("everyone", :visibility)
+				AND published = 1
+				AND navigation_visible = 1', array(
+			'visibility' => $visibility
+		));
+
+		$full_reference_list = array();
+		$id_cache = array();
+
+		foreach ($pages as $page)
+		{
+			$ref = new Cms_NavigationNode($page);
+			$full_reference_list[] = $ref;
+			$id_cache[$ref->id] = $ref;
+
+			$parent_key = $page->parent_id ? $page->parent_id : -1;
+			self::$navigation_full_parent_cache[$parent_key][] = $ref;
+		}
+
+		foreach ($full_reference_list as $ref)
+		{
+			if (empty($ref->parent_id))
+				$ref->parent_id = -1;
+
+			while (!empty($id_cache[$ref->parent_id]) && !$id_cache[$ref->parent_id]->navigation_visible)
+				$ref->parent_id = $id_cache[$ref->parent_id]->parent_id;
+
+			$parent_key = $ref->parent_id ? $ref->parent_id : -1;
+			self::$navigation_parent_cache[$parent_key][] = $ref;
+			$ref->parent_key_index = count(self::$navigation_parent_cache[$parent_key])-1;
+
+			self::$navigation_id_cache[$ref->id] = $ref;
+		}
+	}
+
 }
